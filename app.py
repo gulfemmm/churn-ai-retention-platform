@@ -1,192 +1,172 @@
+import time
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import shap
+import matplotlib.pyplot as plt
 from google import genai
+import requests
+from pdf_generator import create_retention_pdf
 
-# 1. Sayfa Düzeni ve Tema Ayarları
+# Page Config
 st.set_page_config(
-    page_title="ChurnAI - Customer Retention Intelligence",
+    page_title="ChurnAI - Retention & Analytics Platform",
     page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Custom CSS Stilleri
-st.markdown("""
-<style>
-    /* Ana Arka Plan ve Kart Stilleri */
-    .stApp {
-        background-color: #0f172a;
-        color: #f8fafc;
-    }
-    .metric-card {
-        background-color: #1e293b;
-        border: 1px solid #334155;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        text-align: center;
-    }
-    .metric-title {
-        color: #94a3b8;
-        font-size: 0.85rem;
-        font-weight: 600;
-        text-transform: uppercase;
-    }
-    .metric-value {
-        color: #f8fafc;
-        font-size: 1.6rem;
-        font-weight: 700;
-        margin-top: 5px;
-    }
-    /* Churn Risk Kutuları */
-    .risk-box-high {
-        background: linear-gradient(135deg, rgba(239,68,68,0.2) 0%, rgba(185,28,28,0.2) 100%);
-        border: 1px solid #ef4444;
-        padding: 20px;
-        border-radius: 12px;
-        color: #fca5a5;
-    }
-    .risk-box-low {
-        background: linear-gradient(135deg, rgba(34,197,94,0.2) 0%, rgba(21,128,61,0.2) 100%);
-        border: 1px solid #22c55e;
-        padding: 20px;
-        border-radius: 12px;
-        color: #86efac;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Title & Header
+st.title("⚡ ChurnAI: Enterprise Customer Churn & Retention Platform")
+st.markdown("Predict customer churn, analyze risk factors via **SHAP (XAI)**, and generate GenAI-powered retention campaigns.")
 
-# 2. Modelleri Yükleme
+# Load Local Model & Columns
 @st.cache_resource
-def load_model():
-    model = joblib.load("best_churn_model.pkl")
-    columns = joblib.load("model_columns.pkl")
-    return model, columns
+def load_assets():
+    try:
+        model = joblib.load("best_churn_model.pkl")
+        columns = joblib.load("model_columns.pkl")
+        return model, columns
+    except Exception as e:
+        st.error(f"Error loading model files: {e}")
+        return None, None
 
-try:
-    model, model_columns = load_model()
-except Exception as e:
-    st.error(f"Model Yükleme Hatası: {e}")
-    st.stop()
+model, model_columns = load_assets()
 
-# Header
-st.title("⚡ ChurnAI: Müşteri Terk Tahmini & Retention Karar Destek Platformu")
-st.caption("XGBoost Makine Öğrenmesi & Google Gemini GenAI ile Müşteri Elde Tutma Stratejileri")
-st.divider()
+# API Key Arka Planda Sessizce Okunuyor
+gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 
-# 3. Sol Menü (Sidebar) & Preset Senaryolar
-st.sidebar.image("https://img.icons8.com/color/96/user-menu-male.png", width=64)
-st.sidebar.title("👤 Müşteri Profil Girişi")
+# Sidebar Settings
+st.sidebar.header("⚙️ Configuration")
+api_mode = st.sidebar.toggle("Use FastAPI Backend", value=False, help="Connect to FastAPI backend at http://127.0.0.1:8000")
 
-# Hızlı Senaryo Butonları
-st.sidebar.markdown("**⚡ Hızlı Test Senaryoları:**")
-col_p1, col_p2 = st.sidebar.columns(2)
-if col_p1.button("🔴 Yüksek Risk"):
-    st.session_state.update({
-        'age': 6, 'spend': 250.0, 'aov': 40.0, 'tickets': 8, 'sat': 1, 'returns': 5, 'days': 65
-    })
-if col_p2.button("🟢 Düşük Risk"):
-    st.session_state.update({
-        'age': 36, 'spend': 3400.0, 'aov': 120.0, 'tickets': 1, 'sat': 5, 'returns': 0, 'days': 8
-    })
+# Main Navigation
+tab1, tab2 = st.tabs(["👤 Single Customer Analysis & PDF Report", "📂 Batch CSV Analysis"])
 
-# Form Girdileri (Session State destekli)
-customer_age = st.sidebar.number_input("Müşterilik Süresi (Ay)", 1, 120, key='age', value=st.session_state.get('age', 12))
-total_spend = st.sidebar.number_input("Toplam Harcama ($)", 0.0, key='spend', value=st.session_state.get('spend', 850.0))
-avg_order_val = st.sidebar.number_input("Ort. Sipariş Tutarı ($)", 0.0, key='aov', value=st.session_state.get('aov', 65.0))
-support_tickets = st.sidebar.slider("Destek Bilet Sayısı", 0, 20, key='tickets', value=st.session_state.get('tickets', 4))
-satisfaction_score = st.sidebar.slider("Memnuniyet Puanı (1-5)", 1, 5, key='sat', value=st.session_state.get('sat', 2))
-returns_count = st.sidebar.slider("İade Sayısı", 0, 10, key='returns', value=st.session_state.get('returns', 2))
-days_since_last = st.sidebar.number_input("Son Alışverişten Beri Geçen Gün", 0, key='days', value=st.session_state.get('days', 35))
-
-predict_btn = st.sidebar.button("🔮 Risk Skorunu Hesapla", type="primary", use_container_width=True)
-
-# 4. Ana Panel Metrik Kartları
-m1, m2, m3, m4 = st.columns(4)
-with m1:
-    st.markdown(f'<div class="metric-card"><div class="metric-title">Toplam Harcama</div><div class="metric-value">${total_spend:,.2f}</div></div>', unsafe_allow_html=True)
-with m2:
-    st.markdown(f'<div class="metric-card"><div class="metric-title">Memnuniyet Skor</div><div class="metric-value">⭐ {satisfaction_score}/5</div></div>', unsafe_allow_html=True)
-with m3:
-    st.markdown(f'<div class="metric-card"><div class="metric-title">Destek Talepleri</div><div class="metric-value">🎧 {support_tickets} Adet</div></div>', unsafe_allow_html=True)
-with m4:
-    st.markdown(f'<div class="metric-card"><div class="metric-title">Son Alışveriş</div><div class="metric-value">📅 {days_since_last} Gün Önce</div></div>', unsafe_allow_html=True)
-
-st.write("")
-
-# 5. Tahmin ve Analiz
-tab1, tab2 = st.columns([1.1, 1])
-
-# Model Tahmini
-input_data = pd.DataFrame(0, index=[0], columns=model_columns)
-if 'customer_age_months' in input_data.columns: input_data['customer_age_months'] = customer_age
-if 'total_spend_usd' in input_data.columns: input_data['total_spend_usd'] = total_spend
-if 'avg_order_value_usd' in input_data.columns: input_data['avg_order_value_usd'] = avg_order_val
-if 'support_tickets' in input_data.columns: input_data['support_tickets'] = support_tickets
-if 'satisfaction_score' in input_data.columns: input_data['satisfaction_score'] = satisfaction_score
-if 'returns_count' in input_data.columns: input_data['returns_count'] = returns_count
-if 'days_since_last_purchase' in input_data.columns: input_data['days_since_last_purchase'] = days_since_last
-
-churn_prob = model.predict_proba(input_data)[0][1]
-risk_percent = churn_prob * 100
-
+# --- TAB 1: SINGLE CUSTOMER ---
 with tab1:
-    st.subheader("🎯 ML Model Risk Analizi")
+    st.subheader("Interactive Customer Risk Profiler")
     
-    st.write(f"**Tahmini Churn İhtimali:** %{risk_percent:.1f}")
-    st.progress(int(risk_percent))
-    
-    if risk_percent >= 50:
-        st.markdown(f"""
-        <div class="risk-box-high">
-            <h3>⚠️ Yüksek Churn Riski (%{risk_percent:.1f})</h3>
-            <p>Müşterinin platformu terk etme olasılığı kritik seviyededir. Memnuniyetsizlik ve destek biletlerinin yoğunluğu ana etkendir.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown(f"""
-        <div class="risk-box-low">
-            <h3>✅ Düşük Churn Riski (%{risk_percent:.1f})</h3>
-            <p>Müşteri platformda aktif ve memnun görünmektedir. Sadakat programlarına dahil edilebilir.</p>
-        </div>
-        """, unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        customer_id = st.text_input("Customer ID", "CUST-8921")
+        tenure = st.number_input("Tenure (Months)", min_value=1, max_value=120, value=12)
+        satisfaction = st.slider("Satisfaction Score (1-5)", 1, 5, 2)
+    with col2:
+        support_calls = st.number_input("Support Tickets (Last 6 Months)", 0, 20, 5)
+        complain = st.selectbox("Has Active Complaint?", [1, 0], format_func=lambda x: "Yes" if x == 1 else "No")
+        cashback = st.number_input("Cashback Amount ($)", 0.0, 500.0, 120.0)
+    with col3:
+        order_count = st.number_input("Order Count", 1, 100, 3)
+        day_since_last_order = st.number_input("Days Since Last Order", 0, 365, 45)
 
-with tab2:
-    st.subheader("🤖 GenAI Retention Asistanı")
-    
-    api_key = st.text_input("🔑 Google Gemini API Key:", type="password", help="Gemini API anahtarınızı buraya girin.")
-    
-    if api_key:
-        try:
-            client = genai.Client(api_key=api_key)
-            
-            user_query = st.text_area("Aksiyon Sorusunu Özelleştirin:", value="Bu müşteriyi elde tutmak için ne tür bir indirim, kupon veya aksiyon sunmalıyım?", height=80)
-            
-            if st.button("🚀 Retention Stratejisi Üret", type="secondary"):
+    input_data = {
+        "Tenure": tenure,
+        "SatisfactionScore": satisfaction,
+        "Complain": complain,
+        "SupportCalls": support_calls,
+        "CashbackAmount": cashback,
+        "OrderCount": order_count,
+        "DaySinceLastOrder": day_since_last_order
+    }
+
+    if st.button("🚀 Analyze Churn Risk"):
+        churn_prob = 0.0
+        risk_level = "Low Risk"
+        
+        if api_mode:
+            try:
+                res = requests.post("http://127.0.0.1:8000/predict", json={"data": input_data})
+                if res.status_code == 200:
+                    res_data = res.json()
+                    churn_prob = res_data["churn_probability"]
+                    risk_level = res_data["risk_level"]
+                else:
+                    st.error("FastAPI error. Check if api.py is running.")
+            except Exception as e:
+                st.error(f"Failed to connect to FastAPI: {e}")
+        else:
+            try:
+                df_single = pd.DataFrame([input_data]).reindex(columns=model_columns, fill_value=0)
+                
+                # Model indeksini [0][1] yapıyoruz (Churn / Sınıf 1 Olasılığı)
+                churn_prob = float(model.predict_proba(df_single)[0][1])
+                
+                risk_level = "High Risk" if churn_prob >= 0.6 else ("Medium Risk" if churn_prob >= 0.3 else "Low Risk")
+            except Exception as predict_err:
+                st.error(f"Prediction Error: {predict_err}")
+
+        st.divider()
+        m1, m2 = st.columns(2)
+        m1.metric("Predicted Churn Probability", f"{churn_prob * 100:.1f}%")
+        m2.metric("Risk Assessment", risk_level, delta="-High Action Needed" if churn_prob >= 0.6 else "Stable")
+
+        retention_text = "N/A"
+        if gemini_api_key:
+            st.markdown("### 🤖 GenAI Retention Action Plan")
+            with st.spinner("Generating personalized retention strategy via Gemini..."):
+                client = genai.Client(api_key=gemini_api_key)
                 prompt = f"""
-                Sen e-ticaret müşteri elde tutma (retention) uzmanısın.
-                Müşteri Profili:
-                - Churn Riski: %{risk_percent:.1f}
-                - Destek Bilet Sayısı: {support_tickets}
-                - Memnuniyet Puanı: {satisfaction_score}/5
-                - İade Sayısı: {returns_count}
-                - Toplam Harcama: ${total_spend}
-                - Son Alışverişten Beri Geçen Gün: {days_since_last}
-                
-                Soru: {user_query}
-                
-                Lütfen müşteri temsilcisinin anında uygulayabileceği 3 maddelik somut ve ikna edici aksiyon planı üret.
+                Act as an expert Customer Retention Specialist for an e-commerce platform.
+                Customer Profile: {input_data}
+                Predicted Churn Probability: {churn_prob * 100:.1f}%
+
+                Provide a concise 3-step action plan to prevent this customer from churning:
+                1. Root cause summary.
+                2. Personalized offer / incentive.
+                3. Recommended communication channel & messaging tone.
                 """
-                with st.spinner("Gemini strateji üretiyor..."):
-                    response = client.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=prompt,
-                    )
-                    st.success("💡 **Önerilen Aksiyon Planı:**")
-                    st.write(response.text)
-        except Exception as e:
-            st.error(f"Gemini API Hatası: {e}")
-    else:
-        st.info("💡 GenAI asistanından canlı strateji tavsiyesi almak için Gemini API anahtarınızı giriniz.")
+                
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        response = client.models.generate_content(
+                            model='gemini-flash-latest',
+                            contents=prompt
+                        )
+                        retention_text = response.text
+                        st.info(retention_text)
+                        break
+                    except Exception as e:
+                        if "503" in str(e) and attempt < max_retries - 1:
+                            time.sleep(2)
+                            continue
+                        else:
+                            st.error(f"Gemini API Error: {e}")
+                            break
+        else:
+            st.warning("Gemini API Key bulunamadı! Lütfen .streamlit/secrets.toml dosyasını kontrol edin.")
+
+        st.divider()
+        pdf_file = create_retention_pdf(
+            customer_id=customer_id,
+            customer_data=input_data,
+            churn_prob=churn_prob,
+            risk_level=risk_level,
+            retention_strategy=retention_text
+        )
+        
+        st.download_button(
+            label="📄 Download Executive PDF Report",
+            data=pdf_file,
+            file_name=f"Retention_Report_{customer_id}.pdf",
+            mime="application/pdf"
+        )
+
+# --- TAB 2: BATCH CSV ---
+with tab2:
+    st.subheader("Bulk Batch CSV Processing")
+    uploaded_file = st.file_uploader("Upload Customer Dataset (CSV)", type=["csv"])
+    if uploaded_file is not None:
+        df_batch = pd.read_csv(uploaded_file)
+        st.write("Uploaded Sample Data:", df_batch.head(3))
+        
+        if st.button("Run Batch Prediction"):
+            df_encoded = pd.get_dummies(df_batch).reindex(columns=model_columns, fill_value=0)
+            # Batch işlemlerinde indeks 1 (Sınıf 1 - Churn Olasılığı) alınıyor
+            preds_prob = model.predict_proba(df_encoded)[:, 1]
+            df_batch["Churn_Probability"] = preds_prob
+            df_batch["Risk_Level"] = ["High Risk" if p >= 0.6 else ("Medium Risk" if p >= 0.3 else "Low Risk") for p in preds_prob]
+            
+            st.success("Batch Prediction Complete!")
+            st.dataframe(df_batch)

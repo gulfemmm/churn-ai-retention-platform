@@ -8,3 +8,7 @@ matplotlib
 seaborn
 joblib
 google-genai
+fastapi
+uvicorn
+requests
+reportlab

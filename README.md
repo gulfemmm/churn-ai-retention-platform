@@ -24,7 +24,7 @@
 - **Backend API:** FastAPI, Uvicorn, Pydantic, Requests
 - **Frontend & Web Dashboard:** Streamlit
 - **Machine Learning & XAI:** Scikit-Learn, XGBoost, SHAP
-- **Generative AI:** Google GenAI SDK (Gemini 2.5 Flash)
+- **Generative AI:** Google GenAI SDK (Gemini Flash API)
 - **Document Generation:** ReportLab
 - **Data Manipulation & Viz:** Pandas, NumPy, Seaborn, Matplotlib
 
@@ -36,6 +36,7 @@
 ├── E-commerce_Customer_Churn_2026.csv   # Anonymized 50K Customer Dataset
 ├── 1_veri_temizleme_ve_eda.ipynb        # Data Cleaning & Exploratory Data Analysis
 ├── 2_model_egitimi_ve_shap.ipynb        # Model Training, Evaluation & SHAP Analysis
+├── train_model.py                       # Standalone Model Training & Pipeline Script
 ├── best_churn_model.pkl                 # Trained Champion Model (XGBoost)
 ├── model_columns.pkl                    # Feature Column Structure
 ├── api.py                               # FastAPI Backend REST API Service
@@ -44,7 +45,7 @@
 ├── requirements.txt                     # Project Dependencies
 └── README.md 
 ```
-##💻 Installation & Quick Start 
+## 💻Installation & Quick Start 
 
 1. Clone the Repository
 ```bash
@@ -55,11 +56,13 @@ cd churn-ai-retention-platform
 ```bash
 pip install -r requirements.txt
 ```
-3. Launch the Backend API (FastAPI - Optional)
+3. Train / Regenerate Model (Optional)
+python train_model.py
+4. Launch the Backend API (FastAPI - Optional)
 ```bash
 uvicorn api:app --reload --port 8000
 ```
-4. Launch the Streamlit Dashboard
+5. Launch the Streamlit Dashboard
 ```bash
 streamlit run app.py
 👤 Author
